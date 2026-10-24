@@ -1,0 +1,90 @@
+#!/bin/bash
+BIN="$(dirname "$(readlink -f "$0")")"
+. "$BIN/netwatch-config"
+AWAY_RESET=600
+
+event() { printf '%s\t%s\n' "$(date '+%F %T')" "$*" >>"$LOG"; }
+probe() { /sbin/ping -c1 -t1 "$1" >/dev/null 2>&1; }
+duration() { printf '%d분 %d초' $(($1 / 60)) $(($1 % 60)); }
+
+# 카페 공유기도 192.168.0.1일 수 있어 MAC까지 맞아야 집으로 본다. 아니면 계정 정보를 보내지 않는다
+is_home() {
+  local gw mac
+  gw=$(/sbin/route -n get default 2>/dev/null | awk '/gateway/{print $2}')
+  [ "$gw" = "$ROUTER" ] && [ -s "$ROUTER_MAC_FILE" ] || return 1
+  mac=$(/usr/sbin/arp -n "$ROUTER" | awk '{print $4}')
+  [ "$mac" = no ] && probe "$ROUTER" && mac=$(/usr/sbin/arp -n "$ROUTER" | awk '{print $4}')
+  [ "$mac" = "$(cat "$ROUTER_MAC_FILE")" ]
+}
+
+online() { probe 1.1.1.1 || probe 8.8.8.8; }
+
+diagnose() {
+  local up=FAIL dns=FAIL http
+  if [ -n "$UPSTREAM" ]; then probe "$UPSTREAM" && up=ok; else up=-; fi
+  # dig는 타임아웃 문구도 stdout으로 내보내므로 IP 형태의 응답만 성공으로 본다
+  /usr/bin/dig +short +time=2 +tries=1 google.com 2>/dev/null | grep -Eq '^[0-9a-f.:]+$' && dns=ok
+  http=$(/usr/bin/curl -s -m3 -o /dev/null -w '%{http_code}' http://captive.apple.com/hotspot-detect.html)
+  echo "상위장비=$up DNS=$dns HTTP=$http"
+}
+
+keep_awake() {
+  [ -n "$awake_pid" ] && kill -0 "$awake_pid" 2>/dev/null && return
+  /usr/bin/caffeinate -is -w $$ &
+  awake_pid=$!
+}
+let_sleep() {
+  [ -n "$awake_pid" ] && kill "$awake_pid" 2>/dev/null
+  awake_pid=
+}
+
+fails=0 first_fail=0 down_since=0 action= last_reboot=0 away_since=0
+while :; do
+  now=$(date +%s)
+  if ! is_home; then
+    let_sleep
+    if [ "$down_since" -gt 0 ]; then
+      [ "$away_since" -eq 0 ] && away_since=$now
+      # 재부팅 중에는 와이파이가 잠시 사라지므로 바로 추적을 끝내지 않는다
+      if [ $((now - away_since)) -ge "$AWAY_RESET" ]; then
+        event "집 네트워크에서 벗어나 끊김 추적 종료"
+        fails=0 down_since=0 action=
+      fi
+    fi
+    sleep "$INTERVAL"
+    continue
+  fi
+  away_since=0
+  keep_awake
+
+  if online; then
+    if [ "$down_since" -gt 0 ]; then
+      d=$(duration $((now - down_since)))
+      if [ "$action" = reboot ]; then
+        event "복구됨: 총 $d 끊김, 자동 재부팅으로 복구"
+        "$BIN/netwatch-notify" "[netwatch] 인터넷 복구됨. 총 $d 끊겼고 공유기를 자동 재부팅해서 살렸습니다." &
+      else
+        event "복구됨: 총 $d 끊김, 저절로 회복"
+      fi
+    fi
+    fails=0 down_since=0 action=
+  else
+    fails=$((fails + 1))
+    # 한 번 실패는 패킷 손실일 수 있어 두 번 연속일 때부터 끊김으로 본다
+    [ "$fails" -eq 1 ] && first_fail=$now
+    if [ "$fails" -eq 2 ]; then
+      down_since=$first_fail
+      event "끊김 시작: $(diagnose)"
+    fi
+    if [ "$down_since" -gt 0 ] && [ -z "$action" ] && [ $((now - down_since)) -ge "$REBOOT_AFTER" ]; then
+      if [ $((now - last_reboot)) -ge "$REBOOT_COOLDOWN" ]; then
+        action=reboot last_reboot=$now
+        event "끊김 $(duration $((now - down_since))) 지속, 공유기 $("$BIN/iptime" status 2>&1), 재부팅 $("$BIN/iptime" reboot 2>&1)"
+      else
+        action=skipped
+        event "끊김 지속 중이나 직전 재부팅 후 $((REBOOT_COOLDOWN / 60))분이 안 지나 재부팅 생략"
+      fi
+    fi
+  fi
+  sleep "$INTERVAL"
+done

@@ -1,0 +1,4 @@
+config
+router-mac
+*.log
+.DS_Store

@@ -1,0 +1,23 @@
+# netwatch 설정. install.sh가 ~/.config/netwatch/config로 복사한다.
+
+# 공유기 관리 주소
+ROUTER=192.168.0.1
+
+# 공유기 앞단 장비(통신사 모뎀·공유기) 주소. 끊겼을 때 어디까지 닿는지 기록하는 용도라 비워 둬도 된다.
+# 모르면 비워 두고, 나중에 `iptime status`의 gw= 값을 넣으면 된다.
+UPSTREAM=
+
+# 복구 알림을 받을 iMessage 주소(전화번호 +8210... 또는 Apple ID 이메일). 비우면 Mac 알림 센터에만 띄운다.
+NOTIFY_TO=
+
+# 키체인에 저장한 공유기 관리자 계정의 서비스 이름
+KEYCHAIN_SERVICE=iptime-admin
+
+# 몇 초마다 확인할지
+INTERVAL=10
+
+# 몇 초 이상 끊기면 재부팅할지
+REBOOT_AFTER=180
+
+# 재부팅 후 이 시간(초) 안에는 다시 재부팅하지 않는다
+REBOOT_COOLDOWN=1800

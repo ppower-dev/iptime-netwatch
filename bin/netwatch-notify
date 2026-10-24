@@ -1,0 +1,48 @@
+#!/bin/bash
+# 사용: netwatch-notify <메시지> | --test
+. "$(dirname "$(readlink -f "$0")")/netwatch-config"
+
+if [ "$1" = --test ]; then
+  # 메시지 앱 제어 권한은 실행 주체별로 따로 받으므로, 실제와 같은 launchd 환경에서 한 번 보내 승인 창을 띄운다
+  label=local.netwatch-notify-test
+  plist=$(mktemp -t netwatch).plist
+  cat >"$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>$label</string>
+<key>ProgramArguments</key><array><string>$(readlink -f "$0")</string><string>[netwatch] 알림 시험 메시지예요.</string></array>
+<key>RunAtLoad</key><true/>
+</dict></plist>
+PLIST
+  launchctl bootout "gui/$(id -u)/$label" 2>/dev/null
+  launchctl bootstrap "gui/$(id -u)" "$plist"
+  echo "시험 메시지를 보내는 중. '메시지 제어 허용' 창이 뜨면 허용을 누르고, 결과는 $LOG 에서 확인"
+  exit 0
+fi
+
+if [ -z "$NOTIFY_TO" ]; then
+  /usr/bin/osascript -e "display notification \"$1\" with title \"netwatch\""
+  exit 0
+fi
+
+# 복구 직후나 화면이 잠긴 동안에는 메시지 앱이 늦게 떠서 AppleEvent가 타임아웃(-1712)나므로 앱을 먼저 띄우고 재시도한다
+for attempt in 1 2 3 4 5; do
+  /usr/bin/open -gja Messages
+  sleep 20
+  err=$(/usr/bin/osascript - "$1" "$NOTIFY_TO" 2>&1 <<'OSA'
+on run argv
+  with timeout of 120 seconds
+    tell application "Messages"
+      set s to 1st account whose service type = iMessage
+      send (item 1 of argv) to participant (item 2 of argv) of s
+    end tell
+  end timeout
+end run
+OSA
+) && { printf '%s\tiMessage 전송 성공 (%s번째 시도)\n' "$(date '+%F %T')" "$attempt" >>"$LOG"; exit 0; }
+  printf '%s\tiMessage 전송 실패 (%s번째 시도): %s\n' "$(date '+%F %T')" "$attempt" "$err" >>"$LOG"
+  sleep 60
+done
+/usr/bin/osascript -e "display notification \"$1\" with title \"netwatch\""
+exit 1

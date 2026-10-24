@@ -1,0 +1,48 @@
+#!/bin/bash
+# 사용: iptime status | reboot | pin
+. "$(dirname "$(readlink -f "$0")")/netwatch-config"
+jar=$(mktemp)
+trap 'rm -f "$jar"' EXIT
+
+call() {
+  /usr/bin/curl -s -m8 -b "$jar" -c "$jar" -X POST \
+    -H 'Content-Type: application/json; charset=utf-8' \
+    -H "Referer: http://$ROUTER/ui/" -H "Origin: http://$ROUTER" \
+    --data-binary "$1" "http://$ROUTER/cgi/service.cgi"
+}
+method() { call "{\"method\":\"$1\"}"; }
+
+login() {
+  local id body
+  id=$(/usr/bin/security find-generic-password -s "$KEYCHAIN_SERVICE" 2>/dev/null | awk -F'"' '/"acct"/{print $4}')
+  [ -n "$id" ] || { echo "키체인에 '$KEYCHAIN_SERVICE' 계정이 없음. README의 계정 저장 단계를 확인" >&2; exit 1; }
+  body=$(/usr/bin/security find-generic-password -s "$KEYCHAIN_SERVICE" -w 2>/dev/null |
+    /usr/bin/python3 -Ic 'import json,sys;print(json.dumps({"method":"session/login","params":{"id":sys.argv[1],"pw":sys.stdin.read().rstrip("\n")}}))' "$id")
+  call "$body" | grep -q '"done"' || { echo "login FAIL" >&2; exit 1; }
+}
+
+case "$1" in
+  status)
+    login
+    method network/interface/wan1/info |
+      /usr/bin/python3 -Ic 'import json,sys;print("wan=%(status)s protocol=%(protocol_status)s link=%(link)s ip=%(ip)s gw=%(gateway)s" % json.load(sys.stdin)["result"])'
+    method session/logout >/dev/null
+    ;;
+  reboot)
+    login
+    method reboot/now
+    ;;
+  pin)
+    login
+    method session/logout >/dev/null
+    mac=$(/usr/sbin/arp -n "$ROUTER" | awk '{print $4}')
+    case "$mac" in
+      *:*:*:*:*:*) ;;
+      *) echo "공유기 MAC을 읽지 못함 ($mac). 공유기 와이파이에 연결돼 있는지 확인" >&2; exit 1 ;;
+    esac
+    mkdir -p "$NETWATCH_DIR"
+    echo "$mac" >"$ROUTER_MAC_FILE"
+    echo "집 공유기 MAC 등록: $mac"
+    ;;
+  *) echo "사용: iptime status | reboot | pin" >&2; exit 2 ;;
+esac
