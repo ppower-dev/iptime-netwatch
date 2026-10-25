@@ -21,3 +21,9 @@ REBOOT_AFTER=30
 
 # 재부팅 후 이 시간(초) 안에는 다시 재부팅하지 않는다
 REBOOT_COOLDOWN=1800
+
+# 재부팅해도 안 살아나면 이 시간(초) 뒤에 다시 재부팅한다
+REBOOT_RETRY_AFTER=300
+
+# 한 번 끊겼을 때 최대 몇 번까지 재부팅할지
+REBOOT_MAX=2

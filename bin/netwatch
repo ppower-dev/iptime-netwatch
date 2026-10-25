@@ -2,6 +2,7 @@
 BIN="$(dirname "$(readlink -f "$0")")"
 . "$BIN/netwatch-config"
 AWAY_RESET=600
+REBOOT_CMD_TRIES=3
 
 event() { printf '%s\t%s\n' "$(date '+%F %T')" "$*" >>"$LOG"; }
 probe() { /sbin/ping -c1 -t1 "$1" >/dev/null 2>&1; }
@@ -38,7 +39,44 @@ let_sleep() {
   awake_pid=
 }
 
-fails=0 first_fail=0 down_since=0 action= last_reboot=0 away_since=0
+try_reboot() {
+  local status out
+  [ -n "$gave_up" ] && return
+  if [ "$reboots" -eq 0 ]; then
+    [ $((now - down_since)) -ge "$REBOOT_AFTER" ] || return
+    if [ $((now - last_reboot)) -lt "$REBOOT_COOLDOWN" ]; then
+      [ -z "$held" ] && event "끊김 지속 중이나 직전 재부팅 후 $((REBOOT_COOLDOWN / 60))분이 안 지나 재부팅 보류"
+      held=1
+      return
+    fi
+  else
+    [ $((now - last_reboot)) -ge "$REBOOT_RETRY_AFTER" ] || return
+    if [ "$reboots" -ge "$REBOOT_MAX" ]; then
+      gave_up=1
+      event "재부팅 ${reboots}번에도 복구 안 됨, 공유기 밖의 문제로 보고 재부팅 중단"
+      return
+    fi
+  fi
+  status=$("$BIN/iptime" status 2>&1)
+  out=$("$BIN/iptime" reboot 2>&1)
+  # 명령이 실패하면 공유기가 재부팅되지 않았으므로 횟수에 세지 않고 다음 확인 때 다시 보낸다
+  if [[ "$out" == *'"done"'* ]]; then
+    reboots=$((reboots + 1)) last_reboot=$now reboot_fails=0
+    event "끊김 $(duration $((now - down_since))) 지속, 공유기 $status, 재부팅($reboots/$REBOOT_MAX) $out"
+  else
+    reboot_fails=$((reboot_fails + 1))
+    event "재부팅 명령 실패($reboot_fails/$REBOOT_CMD_TRIES): $out"
+    if [ "$reboot_fails" -ge "$REBOOT_CMD_TRIES" ]; then
+      gave_up=1
+      event "재부팅 명령이 계속 실패해 재부팅 중단"
+    fi
+  fi
+}
+
+reset_outage() { fails=0 down_since=0 reboots=0 reboot_fails=0 held= gave_up=; }
+
+reset_outage
+first_fail=0 last_reboot=0 away_since=0
 while :; do
   now=$(date +%s)
   if ! is_home; then
@@ -48,7 +86,7 @@ while :; do
       # 재부팅 중에는 와이파이가 잠시 사라지므로 바로 추적을 끝내지 않는다
       if [ $((now - away_since)) -ge "$AWAY_RESET" ]; then
         event "집 네트워크에서 벗어나 끊김 추적 종료"
-        fails=0 down_since=0 action=
+        reset_outage
       fi
     fi
     sleep "$INTERVAL"
@@ -60,14 +98,14 @@ while :; do
   if online; then
     if [ "$down_since" -gt 0 ]; then
       d=$(duration $((now - down_since)))
-      if [ "$action" = reboot ]; then
-        event "복구됨: 총 $d 끊김, 자동 재부팅으로 복구"
-        "$BIN/netwatch-notify" "[netwatch] 인터넷 복구됨. 총 $d 끊겼고 공유기를 자동 재부팅해서 살렸습니다." &
+      if [ "$reboots" -gt 0 ]; then
+        event "복구됨: 총 $d 끊김, 자동 재부팅 ${reboots}번으로 복구"
+        "$BIN/netwatch-notify" "[netwatch] 인터넷 복구됨. 총 $d 끊겼고 공유기를 자동 재부팅 ${reboots}번 해서 살렸습니다." &
       else
         event "복구됨: 총 $d 끊김, 저절로 회복"
       fi
     fi
-    fails=0 down_since=0 action=
+    reset_outage
   else
     fails=$((fails + 1))
     # 한 번 실패는 패킷 손실일 수 있어 두 번 연속일 때부터 끊김으로 본다
@@ -76,15 +114,7 @@ while :; do
       down_since=$first_fail
       event "끊김 시작: $(diagnose)"
     fi
-    if [ "$down_since" -gt 0 ] && [ -z "$action" ] && [ $((now - down_since)) -ge "$REBOOT_AFTER" ]; then
-      if [ $((now - last_reboot)) -ge "$REBOOT_COOLDOWN" ]; then
-        action=reboot last_reboot=$now
-        event "끊김 $(duration $((now - down_since))) 지속, 공유기 $("$BIN/iptime" status 2>&1), 재부팅 $("$BIN/iptime" reboot 2>&1)"
-      else
-        action=skipped
-        event "끊김 지속 중이나 직전 재부팅 후 $((REBOOT_COOLDOWN / 60))분이 안 지나 재부팅 생략"
-      fi
-    fi
+    [ "$down_since" -gt 0 ] && try_reboot
   fi
   sleep "$INTERVAL"
 done
