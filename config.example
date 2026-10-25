@@ -17,7 +17,7 @@ KEYCHAIN_SERVICE=iptime-admin
 INTERVAL=10
 
 # 몇 초 이상 끊기면 재부팅할지
-REBOOT_AFTER=180
+REBOOT_AFTER=30
 
 # 재부팅 후 이 시간(초) 안에는 다시 재부팅하지 않는다
 REBOOT_COOLDOWN=1800
