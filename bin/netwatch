@@ -39,14 +39,23 @@ let_sleep() {
   awake_pid=
 }
 
+prune_reboot_times() {
+  local t kept=
+  recent_reboots=0
+  for t in $reboot_times; do
+    [ $((now - t)) -lt 3600 ] && kept="$kept $t" recent_reboots=$((recent_reboots + 1))
+  done
+  reboot_times=$kept
+}
+
 try_reboot() {
   local status out
   [ -n "$gave_up" ] && return
   if [ "$reboots" -eq 0 ]; then
     [ $((now - down_since)) -ge "$REBOOT_AFTER" ] || return
     if [ $((now - last_reboot)) -lt "$REBOOT_COOLDOWN" ]; then
-      [ -z "$held" ] && event "끊김 지속 중이나 직전 재부팅 후 $((REBOOT_COOLDOWN / 60))분이 안 지나 재부팅 보류"
-      held=1
+      [ "$held" != cooldown ] && event "끊김 지속 중이나 직전 재부팅 후 $((REBOOT_COOLDOWN / 60))분이 안 지나 재부팅 보류"
+      held=cooldown
       return
     fi
   else
@@ -57,11 +66,17 @@ try_reboot() {
       return
     fi
   fi
+  prune_reboot_times
+  if [ "$recent_reboots" -ge "$REBOOT_HOURLY_MAX" ]; then
+    [ "$held" != cap ] && event "끊김 지속 중이나 최근 1시간 재부팅이 ${recent_reboots}번이라 재부팅 보류"
+    held=cap
+    return
+  fi
   status=$("$BIN/iptime" status 2>&1)
   out=$("$BIN/iptime" reboot 2>&1)
   # 명령이 실패하면 공유기가 재부팅되지 않았으므로 횟수에 세지 않고 다음 확인 때 다시 보낸다
   if [[ "$out" == *'"done"'* ]]; then
-    reboots=$((reboots + 1)) last_reboot=$now reboot_fails=0
+    reboots=$((reboots + 1)) last_reboot=$now reboot_fails=0 reboot_times="$reboot_times $now"
     event "끊김 $(duration $((now - down_since))) 지속, 공유기 $status, 재부팅($reboots/$REBOOT_MAX) $out"
   else
     reboot_fails=$((reboot_fails + 1))
@@ -76,7 +91,7 @@ try_reboot() {
 reset_outage() { fails=0 down_since=0 reboots=0 reboot_fails=0 held= gave_up=; }
 
 reset_outage
-first_fail=0 last_reboot=0 away_since=0
+first_fail=0 last_reboot=0 away_since=0 reboot_times=
 while :; do
   now=$(date +%s)
   if ! is_home; then
