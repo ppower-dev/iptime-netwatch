@@ -95,14 +95,16 @@ first_fail=0 last_reboot=0 away_since=0 reboot_times=
 while :; do
   now=$(date +%s)
   if ! is_home; then
-    let_sleep
+    # 재부팅 중에는 와이파이가 잠시 사라지므로 바로 추적을 끝내거나 잠들게 두지 않는다
     if [ "$down_since" -gt 0 ]; then
       [ "$away_since" -eq 0 ] && away_since=$now
-      # 재부팅 중에는 와이파이가 잠시 사라지므로 바로 추적을 끝내지 않는다
       if [ $((now - away_since)) -ge "$AWAY_RESET" ]; then
         event "집 네트워크에서 벗어나 끊김 추적 종료"
         reset_outage
+        let_sleep
       fi
+    else
+      let_sleep
     fi
     sleep "$INTERVAL"
     continue
